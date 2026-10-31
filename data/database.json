@@ -91,9 +91,21 @@
     "secondaryColor": "#0F172A"
   },
   "activeLowerThird": {
-    "person": null,
-    "visible": false,
-    "timestamp": 0
+    "person": {
+      "id": "p-1",
+      "name": "ดร. กิตติศักดิ์ พัฒนพงศ์",
+      "position": "ผู้อำนวยการสถาบันนวัตกรรมสื่อดิจิทัล",
+      "description": "ผู้เชี่ยวชาญด้านเทคโนโลยีปัญญาประดิษฐ์และการสื่อสารมวลชน",
+      "profileImage": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+      "themeColor": "#8B5CF6",
+      "textColor": "#FFFFFF",
+      "bgColor": "#0F172A",
+      "category": "วิทยากรพิเศษ",
+      "order": 0,
+      "createdAt": 1793468783078
+    },
+    "visible": true,
+    "timestamp": 1793470924244
   },
-  "lastUpdated": 1793469183079
+  "lastUpdated": 1793470924244
 }

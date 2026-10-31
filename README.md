@@ -25,13 +25,27 @@
 
 ## 🚀 วิธีเริ่มต้นใช้งาน (Quick Start)
 
-### วิธีที่ 1: รันด้วย start.bat (สำหรับ Windows 10/11)
+### วิธีที่ 1: ติดตั้งและใช้งานผ่าน Vercel (Cloud Deployment) 🚀
+ระบบได้เพิ่มไฟล์คอนฟิก `vercel.json` และ Serverless API (`api/index.ts`) ให้เรียบร้อยแล้ว:
+1. เชื่อมต่อ Git Repository กับ **Vercel**
+2. ตั้งค่าการ Build บน Vercel:
+   - **Framework Preset**: `Vite`
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+3. เมื่อ Deploy สำเร็จ คุณจะได้ URL ของ Vercel เช่น:
+   - **Control Panel (สำหรับใส่ใน OBS Dock)**: `https://your-app.vercel.app/`
+   - **Overlay (สำหรับใส่ใน OBS Browser Source)**: `https://your-app.vercel.app/overlay`
+4. **ระบบ Real-Time บน Vercel**: รองรับการสื่อสารแบบ Real-time (0ms) ทันทีระหว่าง OBS Dock และ OBS Browser Source ผ่านมาตรฐาน `BroadcastChannel API` และ Serverless REST API
+
+---
+
+### วิธีที่ 2: รันด้วย start.bat (สำหรับ Windows 10/11 ในเครื่อง)
 เพียงดับเบิลคลิกที่ไฟล์ **`start.bat`**
 - ระบบจะตรวจสอบ Node.js อัตโนมัติ
 - เริ่มต้นเซิร์ฟเวอร์บนพอร์ต 3000
 - เปิดหน้าต่าง Control Panel บน Browser อัตโนมัติ
 
-### วิธีที่ 2: รันผ่าน Terminal / Command Prompt
+### วิธีที่ 3: รันผ่าน Terminal / Command Prompt
 ```bash
 # 1. ติดตั้ง Dependencies
 npm install

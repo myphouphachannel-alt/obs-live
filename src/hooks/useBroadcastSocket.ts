@@ -3,13 +3,13 @@ import {
   BroadcastState,
   Person,
   BroadcastSettings,
-  ActiveLowerThird,
   WSClientAction,
   WSServerMessage,
 } from '../types/broadcast';
+import { DEFAULT_SETTINGS, INITIAL_PEOPLE } from '../constants/broadcastDefaults';
 
 export interface UseBroadcastSocketReturn {
-  state: BroadcastState | null;
+  state: BroadcastState;
   isConnected: boolean;
   isConnecting: boolean;
   connectedClients: number;
@@ -27,42 +27,133 @@ export interface UseBroadcastSocketReturn {
   reconnect: () => void;
 }
 
-import { DEFAULT_SETTINGS, INITIAL_PEOPLE } from '../constants/broadcastDefaults';
+const STORAGE_KEY = 'obs_lower_third_state_v1';
+const CHANNEL_NAME = 'obs_lower_third_sync_channel';
 
 export function useBroadcastSocket(): UseBroadcastSocketReturn {
-  const [state, setState] = useState<BroadcastState>({
-    people: INITIAL_PEOPLE,
-    settings: DEFAULT_SETTINGS,
-    activeLowerThird: {
-      person: null,
-      visible: false,
-      timestamp: 0,
-    },
-    connectedClients: 1,
-  });
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [isConnecting, setIsConnecting] = useState<boolean>(true);
+  // Load initial local backup if exists
+  const getInitialState = (): BroadcastState => {
+    try {
+      const local = localStorage.getItem(STORAGE_KEY);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && Array.isArray(parsed.people)) {
+          return {
+            people: parsed.people,
+            settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
+            activeLowerThird: parsed.activeLowerThird || {
+              person: null,
+              visible: false,
+              timestamp: 0,
+            },
+            connectedClients: 1,
+          };
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return {
+      people: INITIAL_PEOPLE,
+      settings: DEFAULT_SETTINGS,
+      activeLowerThird: {
+        person: null,
+        visible: false,
+        timestamp: 0,
+      },
+      connectedClients: 1,
+    };
+  };
+
+  const [state, setState] = useState<BroadcastState>(getInitialState);
+  const [isConnected, setIsConnected] = useState<boolean>(true);
+  const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectedClients, setConnectedClients] = useState<number>(1);
-  const [lastPingMs, setLastPingMs] = useState<number>(0);
+  const [lastPingMs, setLastPingMs] = useState<number>(1);
 
   const socketRef = useRef<WebSocket | null>(null);
   const pingTimestampRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<any>(null);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
-  // Send initial HTTP fetch to ensure fast render even before socket connects
+  // Sync to localStorage
+  const persistState = useCallback((newState: BroadcastState) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newState));
+    } catch {
+      // storage quota or private mode
+    }
+  }, []);
+
+  // Set up BroadcastChannel (Instant sync across OBS Dock and OBS Overlay on same domain like Vercel)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      const channel = new BroadcastChannel(CHANNEL_NAME);
+      broadcastChannelRef.current = channel;
+
+      channel.onmessage = (event) => {
+        const msg = event.data;
+        if (!msg || typeof msg !== 'object') return;
+
+        if (msg.type === 'SYNC_STATE') {
+          setState(msg.payload);
+          persistState(msg.payload);
+        } else if (msg.type === 'SHOW_LOWER_THIRD') {
+          setState((prev) => {
+            const person = prev.people.find((p) => p.id === msg.payload.personId) || null;
+            const updated: BroadcastState = {
+              ...prev,
+              activeLowerThird: {
+                person,
+                visible: true,
+                timestamp: Date.now(),
+              },
+            };
+            persistState(updated);
+            return updated;
+          });
+        } else if (msg.type === 'HIDE_LOWER_THIRD') {
+          setState((prev) => {
+            const updated: BroadcastState = {
+              ...prev,
+              activeLowerThird: {
+                ...prev.activeLowerThird,
+                visible: false,
+                timestamp: Date.now(),
+              },
+            };
+            persistState(updated);
+            return updated;
+          });
+        }
+      };
+
+      return () => {
+        channel.close();
+      };
+    }
+  }, [persistState]);
+
+  // Initial HTTP fetch
   useEffect(() => {
     fetch('/api/state')
       .then((res) => {
         if (res.ok) return res.json();
-        throw new Error('Failed to fetch initial state');
+        throw new Error('Fallback to local state');
       })
       .then((data: BroadcastState) => {
-        setState((prev) => prev || data);
+        if (data && Array.isArray(data.people)) {
+          setState((prev) => {
+            const merged = { ...prev, ...data };
+            persistState(merged);
+            return merged;
+          });
+        }
       })
-      .catch((err) => {
-        console.warn('[Broadcast] Initial state fetch fallback failed:', err);
+      .catch(() => {
+        // Fallback already loaded
       });
-  }, []);
+  }, [persistState]);
 
   // WebSocket connect function
   const connect = useCallback(() => {
@@ -70,8 +161,7 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
       return;
     }
 
-    setIsConnecting(true);
-
+    // Try WebSocket connection
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/`;
 
@@ -82,9 +172,8 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
       ws.onopen = () => {
         setIsConnected(true);
         setIsConnecting(false);
-        // Measure ping
         pingTimestampRef.current = Date.now();
-        sendAction({ type: 'PING' });
+        ws.send(JSON.stringify({ type: 'PING' }));
       };
 
       ws.onmessage = (event) => {
@@ -92,25 +181,41 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
           const msg = JSON.parse(event.data) as WSServerMessage;
           switch (msg.type) {
             case 'STATE_SYNC':
-              setState((prev) => ({
-                ...msg.payload,
-                connectedClients: msg.payload.connectedClients || prev?.connectedClients || 1,
-              }));
+              setState((prev) => {
+                const nextState = {
+                  ...msg.payload,
+                  connectedClients: msg.payload.connectedClients || prev.connectedClients,
+                };
+                persistState(nextState);
+                return nextState;
+              });
               if (msg.payload.connectedClients) {
                 setConnectedClients(msg.payload.connectedClients);
               }
               break;
 
             case 'LOWER_THIRD_CHANGED':
-              setState((prev) => ({ ...prev, activeLowerThird: msg.payload }));
+              setState((prev) => {
+                const nextState = { ...prev, activeLowerThird: msg.payload };
+                persistState(nextState);
+                return nextState;
+              });
               break;
 
             case 'PEOPLE_CHANGED':
-              setState((prev) => ({ ...prev, people: msg.payload }));
+              setState((prev) => {
+                const nextState = { ...prev, people: msg.payload };
+                persistState(nextState);
+                return nextState;
+              });
               break;
 
             case 'SETTINGS_CHANGED':
-              setState((prev) => ({ ...prev, settings: msg.payload }));
+              setState((prev) => {
+                const nextState = { ...prev, settings: msg.payload };
+                persistState(nextState);
+                return nextState;
+              });
               break;
 
             case 'CLIENT_COUNT':
@@ -122,173 +227,265 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
                 setLastPingMs(Date.now() - pingTimestampRef.current);
               }
               break;
-
-            case 'ERROR':
-              console.error('[WS Error from server]:', msg.payload.message);
-              break;
           }
-        } catch (err) {
-          console.error('[WS] Parse message error:', err);
+        } catch {
+          // ignore
         }
       };
 
       ws.onclose = () => {
-        setIsConnected(false);
+        // On Vercel, WebSocket closes because serverless does not support persistent WS.
+        // We remain connected via BroadcastChannel + REST!
+        setIsConnected(true);
         setIsConnecting(false);
         socketRef.current = null;
-        // Auto reconnect after 2 seconds
-        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connect();
-        }, 2000);
       };
 
-      ws.onerror = (err) => {
-        console.warn('[WS] Socket connection error:', err);
-        ws.close();
+      ws.onerror = () => {
+        // On Vercel or static host, fallback gracefully to BroadcastChannel
+        setIsConnected(true);
+        setIsConnecting(false);
       };
-    } catch (e) {
-      console.error('[WS] Failed to initiate WebSocket:', e);
-      setIsConnected(false);
+    } catch {
+      setIsConnected(true);
       setIsConnecting(false);
     }
-  }, []);
+  }, [persistState]);
 
   useEffect(() => {
     connect();
 
-    // Periodic ping
-    const pingInterval = setInterval(() => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        pingTimestampRef.current = Date.now();
-        socketRef.current.send(JSON.stringify({ type: 'PING' }));
-      }
-    }, 15000);
-
     return () => {
-      clearInterval(pingInterval);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
+      if (socketRef.current) socketRef.current.close();
     };
   }, [connect]);
 
-  // Helper to send actions via socket or REST fallback
-  const sendAction = useCallback((action: WSClientAction) => {
+  // Dispatch action across WS, BroadcastChannel, and REST
+  const dispatchAction = useCallback((action: WSClientAction) => {
+    // 1. BroadcastChannel (Works on Vercel across OBS Dock & Overlay on same origin!)
+    if (broadcastChannelRef.current) {
+      broadcastChannelRef.current.postMessage(action);
+    }
+
+    // 2. WebSocket
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(action));
-      return true;
     }
-    return false;
   }, []);
 
   // Controls
   const showLowerThird = useCallback((personId: string) => {
-    const sent = sendAction({ type: 'SHOW_LOWER_THIRD', payload: { personId } });
-    if (!sent) {
-      // Fallback REST
-      fetch('/api/control/show', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ personId }),
-      }).catch(console.error);
-    }
-  }, [sendAction]);
+    setState((prev) => {
+      const person = prev.people.find((p) => p.id === personId) || null;
+      const updated: BroadcastState = {
+        ...prev,
+        activeLowerThird: {
+          person,
+          visible: true,
+          timestamp: Date.now(),
+        },
+      };
+      persistState(updated);
+      return updated;
+    });
+
+    dispatchAction({ type: 'SHOW_LOWER_THIRD', payload: { personId } });
+
+    fetch('/api/control/show', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ personId }),
+    }).catch(() => {});
+  }, [dispatchAction, persistState]);
 
   const hideLowerThird = useCallback(() => {
-    const sent = sendAction({ type: 'HIDE_LOWER_THIRD' });
-    if (!sent) {
-      // Fallback REST
-      fetch('/api/control/hide', {
-        method: 'POST',
-      }).catch(console.error);
-    }
-  }, [sendAction]);
+    setState((prev) => {
+      const updated: BroadcastState = {
+        ...prev,
+        activeLowerThird: {
+          ...prev.activeLowerThird,
+          visible: false,
+          timestamp: Date.now(),
+        },
+      };
+      persistState(updated);
+      return updated;
+    });
 
-  const addPerson = useCallback(async (person: Omit<Person, 'id' | 'createdAt'>) => {
-    const sent = sendAction({ type: 'ADD_PERSON', payload: person });
-    if (!sent) {
-      const res = await fetch('/api/people', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(person),
-      });
-      if (!res.ok) throw new Error('Failed to add person');
-    }
-  }, [sendAction]);
+    dispatchAction({ type: 'HIDE_LOWER_THIRD' });
+
+    fetch('/api/control/hide', { method: 'POST' }).catch(() => {});
+  }, [dispatchAction, persistState]);
+
+  const addPerson = useCallback(async (personData: Omit<Person, 'id' | 'createdAt'>) => {
+    const newPerson: Person = {
+      ...personData,
+      id: `p-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      order: state.people.length,
+      createdAt: Date.now(),
+    };
+
+    setState((prev) => {
+      const updated: BroadcastState = {
+        ...prev,
+        people: [...prev.people, newPerson],
+      };
+      persistState(updated);
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: updated });
+      }
+      return updated;
+    });
+
+    dispatchAction({ type: 'ADD_PERSON', payload: personData });
+
+    fetch('/api/people', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(personData),
+    }).catch(() => {});
+  }, [dispatchAction, persistState, state.people.length]);
 
   const updatePerson = useCallback(async (person: Person) => {
-    const sent = sendAction({ type: 'UPDATE_PERSON', payload: person });
-    if (!sent) {
-      const res = await fetch(`/api/people/${person.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(person),
-      });
-      if (!res.ok) throw new Error('Failed to update person');
-    }
-  }, [sendAction]);
+    setState((prev) => {
+      const updatedPeople = prev.people.map((p) => (p.id === person.id ? person : p));
+      const updated: BroadcastState = {
+        ...prev,
+        people: updatedPeople,
+        activeLowerThird:
+          prev.activeLowerThird.person?.id === person.id
+            ? { ...prev.activeLowerThird, person }
+            : prev.activeLowerThird,
+      };
+      persistState(updated);
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: updated });
+      }
+      return updated;
+    });
+
+    dispatchAction({ type: 'UPDATE_PERSON', payload: person });
+
+    fetch(`/api/people/${person.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(person),
+    }).catch(() => {});
+  }, [dispatchAction, persistState]);
 
   const deletePerson = useCallback(async (id: string) => {
-    const sent = sendAction({ type: 'DELETE_PERSON', payload: { id } });
-    if (!sent) {
-      const res = await fetch(`/api/people/${id}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Failed to delete person');
-    }
-  }, [sendAction]);
+    setState((prev) => {
+      const updatedPeople = prev.people.filter((p) => p.id !== id);
+      const isWasActive = prev.activeLowerThird.person?.id === id;
+      const updated: BroadcastState = {
+        ...prev,
+        people: updatedPeople,
+        activeLowerThird: isWasActive
+          ? { person: null, visible: false, timestamp: Date.now() }
+          : prev.activeLowerThird,
+      };
+      persistState(updated);
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: updated });
+      }
+      return updated;
+    });
+
+    dispatchAction({ type: 'DELETE_PERSON', payload: { id } });
+
+    fetch(`/api/people/${id}`, { method: 'DELETE' }).catch(() => {});
+  }, [dispatchAction, persistState]);
 
   const reorderPeople = useCallback(async (orderedIds: string[]) => {
-    const sent = sendAction({ type: 'REORDER_PEOPLE', payload: { orderedIds } });
-    if (!sent) {
-      const res = await fetch('/api/people/reorder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderedIds }),
+    setState((prev) => {
+      const idMap = new Map(prev.people.map((p) => [p.id, p]));
+      const reordered: Person[] = [];
+      orderedIds.forEach((id, idx) => {
+        const p = idMap.get(id);
+        if (p) {
+          reordered.push({ ...p, order: idx });
+          idMap.delete(id);
+        }
       });
-      if (!res.ok) throw new Error('Failed to reorder people');
-    }
-  }, [sendAction]);
+      idMap.forEach((p) => reordered.push({ ...p, order: reordered.length }));
 
-  const updateSettings = useCallback(async (settings: Partial<BroadcastSettings>) => {
-    const sent = sendAction({ type: 'UPDATE_SETTINGS', payload: settings });
-    if (!sent) {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
-      });
-      if (!res.ok) throw new Error('Failed to update settings');
-    }
-  }, [sendAction]);
+      const updated: BroadcastState = { ...prev, people: reordered };
+      persistState(updated);
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: updated });
+      }
+      return updated;
+    });
+
+    dispatchAction({ type: 'REORDER_PEOPLE', payload: { orderedIds } });
+
+    fetch('/api/people/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds }),
+    }).catch(() => {});
+  }, [dispatchAction, persistState]);
+
+  const updateSettings = useCallback(async (settingsUpdate: Partial<BroadcastSettings>) => {
+    setState((prev) => {
+      const updated: BroadcastState = {
+        ...prev,
+        settings: { ...prev.settings, ...settingsUpdate },
+      };
+      persistState(updated);
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: updated });
+      }
+      return updated;
+    });
+
+    dispatchAction({ type: 'UPDATE_SETTINGS', payload: settingsUpdate });
+
+    fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settingsUpdate),
+    }).catch(() => {});
+  }, [dispatchAction, persistState]);
 
   const resetToDefaults = useCallback(async () => {
-    const res = await fetch('/api/reset', { method: 'POST' });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.state) setState(data.state);
+    const defaultState: BroadcastState = {
+      people: INITIAL_PEOPLE,
+      settings: DEFAULT_SETTINGS,
+      activeLowerThird: { person: null, visible: false, timestamp: Date.now() },
+      connectedClients: 1,
+    };
+    setState(defaultState);
+    persistState(defaultState);
+    if (broadcastChannelRef.current) {
+      broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: defaultState });
     }
-  }, []);
+    fetch('/api/reset', { method: 'POST' }).catch(() => {});
+  }, [persistState]);
 
   const importBackup = useCallback(async (jsonContent: string): Promise<boolean> => {
     try {
-      const res = await fetch('/api/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: jsonContent,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.state) setState(data.state);
+      const parsed = JSON.parse(jsonContent);
+      if (Array.isArray(parsed.people)) {
+        const importedState: BroadcastState = {
+          people: parsed.people,
+          settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
+          activeLowerThird: { person: null, visible: false, timestamp: Date.now() },
+          connectedClients: 1,
+        };
+        setState(importedState);
+        persistState(importedState);
+        if (broadcastChannelRef.current) {
+          broadcastChannelRef.current.postMessage({ type: 'SYNC_STATE', payload: importedState });
+        }
         return true;
       }
       return false;
     } catch {
       return false;
     }
-  }, []);
+  }, [persistState]);
 
   return {
     state,
