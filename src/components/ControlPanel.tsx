@@ -6,7 +6,7 @@ import { ControlSidebar } from './ControlSidebar';
 import { PersonModal } from './PersonModal';
 import { SettingsModal } from './SettingsModal';
 import { Person, BroadcastSettings } from '../types/broadcast';
-import { DEFAULT_SETTINGS } from '../../server/database';
+import { DEFAULT_SETTINGS } from '../constants/broadcastDefaults';
 
 export const ControlPanel: React.FC = () => {
   const {

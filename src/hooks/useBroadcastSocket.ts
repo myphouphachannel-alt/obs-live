@@ -27,8 +27,19 @@ export interface UseBroadcastSocketReturn {
   reconnect: () => void;
 }
 
+import { DEFAULT_SETTINGS, INITIAL_PEOPLE } from '../constants/broadcastDefaults';
+
 export function useBroadcastSocket(): UseBroadcastSocketReturn {
-  const [state, setState] = useState<BroadcastState | null>(null);
+  const [state, setState] = useState<BroadcastState>({
+    people: INITIAL_PEOPLE,
+    settings: DEFAULT_SETTINGS,
+    activeLowerThird: {
+      person: null,
+      visible: false,
+      timestamp: 0,
+    },
+    connectedClients: 1,
+  });
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(true);
   const [connectedClients, setConnectedClients] = useState<number>(1);
@@ -36,7 +47,7 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
 
   const socketRef = useRef<WebSocket | null>(null);
   const pingTimestampRef = useRef<number>(0);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<any>(null);
 
   // Send initial HTTP fetch to ensure fast render even before socket connects
   useEffect(() => {
@@ -91,15 +102,15 @@ export function useBroadcastSocket(): UseBroadcastSocketReturn {
               break;
 
             case 'LOWER_THIRD_CHANGED':
-              setState((prev) => prev ? { ...prev, activeLowerThird: msg.payload } : null);
+              setState((prev) => ({ ...prev, activeLowerThird: msg.payload }));
               break;
 
             case 'PEOPLE_CHANGED':
-              setState((prev) => prev ? { ...prev, people: msg.payload } : null);
+              setState((prev) => ({ ...prev, people: msg.payload }));
               break;
 
             case 'SETTINGS_CHANGED':
-              setState((prev) => prev ? { ...prev, settings: msg.payload } : null);
+              setState((prev) => ({ ...prev, settings: msg.payload }));
               break;
 
             case 'CLIENT_COUNT':
