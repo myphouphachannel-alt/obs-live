@@ -1,0 +1,6 @@
+{
+  "name": "OBS Lower Third Control Panel",
+  "description": "Professional real-time broadcast Lower Third control panel and overlay system for OBS Studio browser docks and browser sources.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
